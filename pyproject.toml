@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flight-tracker"
+version = "0.1.0"
+description = "Track flight prices over a fixed window and automatically buy at the best moment."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+flight-tracker = "flight_tracker.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["flight_tracker*"]
