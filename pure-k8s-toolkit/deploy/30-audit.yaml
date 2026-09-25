@@ -39,7 +39,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: audit
-          image: registry.example.local/platform/ptk:0.1.0
+          image: harbor.lab.local/platform/ptk:0.1.0
           args: ["audit"]
           env:
             - {name: PTK_ARRAYS_FILE, value: /etc/ptk/arrays.json}

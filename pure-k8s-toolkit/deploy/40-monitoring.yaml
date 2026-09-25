@@ -66,11 +66,30 @@ spec:
           # Adds namespace/pvc when the audit knows the volume; falls back to wwid.
           expr: >-
             ((ptk_multipath_paths_running < 2) * on (wwid) group_left (namespace, pvc) ptk_pvc_volume_info)
-            or ((ptk_multipath_paths_running < 2) unless on (wwid) ptk_pvc_volume_info)
+            or (max without (namespace) (ptk_multipath_paths_running < 2) unless on (wwid) ptk_pvc_volume_info)
           for: 5m
           labels: {severity: critical}
           annotations:
-            summary: "{{ $labels.node }}: {{ $labels.namespace }}/{{ $labels.pvc }} ({{ $labels.wwid }}) has {{ $value }} running path(s)"
+            summary: "{{ $labels.node }}: {{ if $labels.pvc }}{{ $labels.namespace }}/{{ $labels.pvc }} {{ end }}volume {{ $labels.wwid }} has {{ $value }} running path(s)"
+    - name: ptk.kata
+      rules:
+        - alert: PtkKataNodeNotCapable
+          # containerd has a Kata handler, but the VM cannot start nested VMs:
+          # Kata pods scheduled here will fail to start.
+          expr: (ptk_node_kata_capable == 0) and on (node) (count by (node) (ptk_node_kata_runtime_info))
+          for: 10m
+          labels: {severity: critical}
+          annotations:
+            summary: "{{ $labels.node }} has Kata configured but no nested virtualization (/dev/kvm)"
+            description: >-
+              Power the VM off in vCenter and enable CPU > 'Expose hardware assisted
+              virtualization to the guest OS', or keep Kata pods off this node.
+        - alert: PtkKataCoverageLow
+          expr: count by (handler) (ptk_node_kata_runtime_info and on (node) (ptk_node_kata_capable == 1)) < 2
+          for: 30m
+          labels: {severity: warning}
+          annotations:
+            summary: "Only {{ $value }} working node(s) offer Kata handler {{ $labels.handler }}; no room to drain one"
     - name: ptk.audit
       rules:
         - alert: PtkPvMissingOnArray

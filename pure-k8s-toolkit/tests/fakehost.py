@@ -19,8 +19,18 @@ def write(root, rel, text):
         f.write(text)
 
 
+CONTAINERD_V3 = """version = 3
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.'runc']
+  runtime_type = "io.containerd.runc.v2"
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.'kata-qemu']
+  runtime_type = "io.containerd.kata-qemu.v2"
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.'kata-qemu'.options]
+  ConfigPath = "/opt/kata/share/defaults/kata-containers/configuration-qemu.toml"
+"""
+
+
 def build(root, conf=GOOD_CONF, path_states=("running", "running"), processes=("multipathd", "iscsid"),
-          scheduler="[none] mq-deadline"):
+          scheduler="[none] mq-deadline", kata=None, cpu_flags="fpu vme sse2 vmx ept", kvm=True):
     host = os.path.join(root, "host")
     proc = os.path.join(root, "proc")
     write(host, "etc/multipath.conf", conf)
@@ -42,4 +52,12 @@ def build(root, conf=GOOD_CONF, path_states=("running", "running"), processes=("
     write(host, "sys/block/dm-3/dm/name", WWID + "\n")
     for sd in slaves:
         write(host, f"sys/block/dm-3/slaves/{sd}", "")
+    write(proc, "cpuinfo", f"processor\t: 0\nflags\t\t: {cpu_flags}\n")
+    write(host, "sys/class/dmi/id/sys_vendor", "VMware, Inc.\n")
+    if kvm:
+        write(host, "sys/class/misc/kvm/dev", "10:232\n")
+        write(host, "sys/module/kvm_intel/refcnt", "0\n")
+    if kata is not None:
+        write(host, "var/lib/rancher/rke2/agent/etc/containerd/config.toml", kata)
+        write(host, "opt/kata/bin/containerd-shim-kata-v2", "")
     return host, proc

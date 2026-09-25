@@ -6,10 +6,13 @@ metadata:
 data:
   # Overrides merged over ptk/policy.py defaults. Set protocol to match how
   # the nodes reach the FlashArray: iscsi | nvme-tcp | fc | any.
+  # kata: "auto" checks nested-virt readiness and fails only on nodes whose
+  # containerd has a Kata handler; "required" expects Kata everywhere; "off".
   policy.json: |
     {
       "protocol": "iscsi",
-      "min_paths": 2
+      "min_paths": 2,
+      "kata": "auto"
     }
 ---
 apiVersion: apps/v1
@@ -34,14 +37,17 @@ spec:
       priorityClassName: system-node-critical
       tolerations:
         - operator: Exists              # all 16 nodes, including control plane
+      # Always runc: hostPID is not possible inside a Kata VM, and this pod must
+      # observe the host. Do not set a runtimeClassName here.
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
+        # uid 0 so it can read root-only files such as RKE2's containerd
+        # config.toml. All capabilities are dropped and every mount is read-only.
+        runAsUser: 0
+        runAsGroup: 0
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: node-check
-          image: registry.example.local/platform/ptk:0.1.0   # your internal registry
+          image: harbor.lab.local/platform/ptk:0.1.0   # your internal registry
           args: ["node-check"]
           env:
             - name: NODE_NAME
@@ -62,11 +68,17 @@ spec:
           volumeMounts:
             - {name: host-etc, mountPath: /host/etc, readOnly: true}
             - {name: host-sys, mountPath: /host/sys, readOnly: true}
+            - {name: host-containerd, mountPath: /host/var/lib/rancher/rke2/agent/etc/containerd, readOnly: true}
+            - {name: host-opt, mountPath: /host/opt, readOnly: true}
             - {name: policy, mountPath: /etc/ptk}
       volumes:
         - name: host-etc
           hostPath: {path: /etc, type: Directory}
         - name: host-sys
           hostPath: {path: /sys, type: Directory}
+        - name: host-containerd
+          hostPath: {path: /var/lib/rancher/rke2/agent/etc/containerd, type: Directory}
+        - name: host-opt              # kata-deploy installs to /opt/kata
+          hostPath: {path: /opt, type: Directory}
         - name: policy
           configMap: {name: ptk-policy}

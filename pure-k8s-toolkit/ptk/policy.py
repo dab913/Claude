@@ -48,6 +48,10 @@ DEFAULT_POLICY: Dict[str, Any] = {
     "require_blacklist": [{"vendor": "VMware", "product": "Virtual disk"}],
     # Block-layer scheduler for Pure paths. FlashArray does its own scheduling.
     "scheduler": "none",
+    # Kata Containers readiness: "auto" fails only on nodes whose containerd has a
+    # Kata handler; "required" expects Kata on every node; "off" skips the checks.
+    "kata": "auto",
+    "containerd_config_dir": "var/lib/rancher/rke2/agent/etc/containerd",
 }
 
 

@@ -8,6 +8,6 @@ resources:
   - 40-monitoring.yaml
 # Point every ptk image at your internal registry in one place.
 images:
-  - name: registry.example.local/platform/ptk
-    newName: registry.example.local/platform/ptk
+  - name: harbor.lab.local/platform/ptk
+    newName: harbor.lab.local/platform/ptk
     newTag: 0.1.0

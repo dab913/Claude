@@ -6,3 +6,5 @@ __pycache__/
 passengers.json
 .env
 dist/
+pure-k8s-toolkit/tests/promql/rules.yaml
+bench-results/

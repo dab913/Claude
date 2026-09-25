@@ -85,9 +85,31 @@ def cmd_bench(args: argparse.Namespace) -> int:
     from ptk import bench
 
     profiles = _csv(args.profiles) if args.profiles else list(bench.PROFILES)
-    results = bench.run(args.dir, args.size, args.runtime, profiles)
+    results = bench.run(args.dir, args.size, args.runtime, profiles,
+                        device=args.device, direct=args.direct)
     print(bench.table(results))
-    print(json.dumps({"storageclass": os.environ.get("PTK_STORAGECLASS", ""), "results": results}))
+    record = {
+        "storageclass": os.environ.get("PTK_STORAGECLASS", ""),
+        "runtime": os.environ.get("PTK_RUNTIME_CLASS") or "runc",
+        "node": os.environ.get("NODE_NAME", ""),
+        "volume_mode": "Block" if args.device else "Filesystem",
+        "results": results,
+    }
+    print(bench.RESULT_MARKER + json.dumps(record))
+    return 0
+
+
+def cmd_bench_report(args: argparse.Namespace) -> int:
+    from ptk import bench
+
+    records = []
+    for path in args.files:
+        with (sys.stdin if path == "-" else open(path)) as f:
+            records.extend(bench.parse_logs(f))
+    if not records:
+        print("no PTK_BENCH_RESULT lines found", file=sys.stderr)
+        return 1
+    print(bench.compare(records, baseline=args.baseline))
     return 0
 
 
@@ -121,7 +143,17 @@ def main(argv: list = None) -> int:
     p.add_argument("--size", default=os.environ.get("PTK_BENCH_SIZE", "4g"))
     p.add_argument("--runtime", type=int, default=int(os.environ.get("PTK_BENCH_RUNTIME", "60")))
     p.add_argument("--profiles", default=os.environ.get("PTK_BENCH_PROFILES", ""))
+    p.add_argument("--device", default=os.environ.get("PTK_BENCH_DEVICE", ""),
+                   help="raw block device of a volumeMode: Block PVC (overwritten)")
+    p.add_argument("--no-direct", dest="direct", action="store_false",
+                   default=os.environ.get("PTK_BENCH_DIRECT", "1") != "0",
+                   help="buffered I/O, for filesystems that reject O_DIRECT")
     p.set_defaults(func=cmd_bench)
+
+    p = sub.add_parser("bench-report", help="compare bench Job logs, e.g. Kata vs runc")
+    p.add_argument("files", nargs="+", help="saved Job logs, or - for stdin")
+    p.add_argument("--baseline", default="runc", help="runtime to compare the others against")
+    p.set_defaults(func=cmd_bench_report)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,

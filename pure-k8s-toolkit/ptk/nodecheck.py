@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import socket
 from typing import Dict, List, Optional
 
@@ -32,12 +33,15 @@ class Result:
 class NodeChecker:
     def __init__(self, policy: dict, host_root: str = "/host", proc: str = "/proc") -> None:
         self.policy = policy
+        self.root = host_root
         self.etc = os.path.join(host_root, "etc")
         self.sys = os.path.join(host_root, "sys")
         self.proc = proc
         self.results: List[Result] = []
         self.info: Dict[str, str] = {}
         self.paths: List[Dict[str, object]] = []
+        self.kata_handlers: List[str] = []
+        self.kata_capable = False
 
     # -- helpers -----------------------------------------------------------
 
@@ -70,6 +74,7 @@ class NodeChecker:
 
     def run(self) -> List[Result]:
         self.results, self.info, self.paths = [], {}, []
+        self.kata_handlers, self.kata_capable = [], False
         protocol = self.policy.get("protocol", "any")
         procs = self._processes()
         mods = self._modules()
@@ -79,6 +84,8 @@ class NodeChecker:
         self._check_identity(protocol)
         conf = self._check_multipath_conf(protocol)
         self._check_devices(conf)
+        if self.policy.get("kata", "auto") != "off":
+            self._check_kata(mods)
         return self.results
 
     def _check_kernel(self, mods: set, protocol: str) -> None:
@@ -239,6 +246,61 @@ class NodeChecker:
         self.info["pure_scsi_paths"] = str(len(pure_sd))
         self.info["pure_nvme_namespaces"] = str(len(nvme_pure))
 
+    def _check_kata(self, mods: set) -> None:
+        """Kata runs each pod in a VM. On vSphere that is nested virtualization:
+        the RHEL VM needs VT-x/AMD-V exposed by ESXi and a working /dev/kvm."""
+        mode = self.policy.get("kata", "auto")  # auto | required | off
+        conf_dir = self.policy.get("containerd_config_dir", "var/lib/rancher/rke2/agent/etc/containerd")
+        conf_path = os.path.join(self.root, conf_dir, "config.toml")
+        text = self._read(conf_path)
+        if text is None and os.path.exists(conf_path):
+            self._add("kata.containerd_readable", WARN,
+                      "cannot read RKE2 containerd config.toml; node-check must run as uid 0 to see Kata handlers")
+        text = text or ""
+        # Matches containerd 1.x (plugins."io.containerd.grpc.v1.cri"...) and 2.x
+        # (plugins.'io.containerd.cri.v1.runtime'...) runtime tables.
+        self.kata_handlers = sorted(set(re.findall(
+            r"containerd\.runtimes\.['\"]?(kata[\w-]*)['\"]?\]", text)))
+        configured = bool(self.kata_handlers)
+        if not configured and mode != "required":
+            # Kata not installed here (for example, control-plane nodes): report capability only.
+            fail_status = INFO
+        else:
+            fail_status = FAIL
+
+        cpuinfo = self._read(os.path.join(self.proc, "cpuinfo")) or ""
+        flags = set()
+        for line in cpuinfo.splitlines():
+            if line.startswith("flags"):
+                flags.update(line.split(":", 1)[1].split())
+                break
+        vendor = (self._read(os.path.join(self.sys, "class", "dmi", "id", "sys_vendor")) or "").strip()
+        hint = (" In vCenter: power the VM off, Edit Settings > CPU > enable 'Expose hardware "
+                "assisted virtualization to the guest OS'." if "VMware" in vendor else "")
+        has_virt = bool(flags & {"vmx", "svm"})
+        self._add("kata.cpu_virtualization", OK if has_virt else fail_status,
+                  "CPU exposes " + "/".join(sorted(flags & {"vmx", "svm"})) if has_virt
+                  else "no vmx/svm CPU flag; nested VMs cannot start." + hint)
+
+        has_kvm = os.path.exists(os.path.join(self.sys, "class", "misc", "kvm"))
+        kvm_mod = next((m for m in ("kvm_intel", "kvm_amd") if m in mods), "")
+        self._add("kata.kvm", OK if has_kvm else fail_status,
+                  f"/dev/kvm available ({kvm_mod or 'kvm'})" if has_kvm
+                  else "/dev/kvm missing; load kvm_intel or kvm_amd (needs the CPU flag above)")
+
+        if configured:
+            self._add("kata.containerd", OK, "containerd runtime handlers: " + ", ".join(self.kata_handlers))
+            shim = os.path.join(self.root, "opt", "kata", "bin", "containerd-shim-kata-v2")
+            self._add("kata.shim", OK if os.path.exists(shim) else FAIL,
+                      "Kata shim installed in /opt/kata/bin" if os.path.exists(shim)
+                      else "containerd has a Kata handler but /opt/kata/bin/containerd-shim-kata-v2 is missing")
+        else:
+            self._add("kata.containerd", WARN if mode == "required" else INFO,
+                      "no Kata runtime handler in RKE2 containerd config" +
+                      ("; install kata-deploy configured for RKE2" if mode == "required" else ""))
+        self.kata_capable = has_virt and has_kvm
+        self.info["kata_capable"] = str(self.kata_capable).lower()
+
     # -- output ------------------------------------------------------------
 
     def report(self, node: str) -> dict:
@@ -269,6 +331,12 @@ class NodeChecker:
         if "machine_id" in self.info:
             snap.add("ptk_node_machine_id_info", 1, {"node": node, "machine_id": self.info["machine_id"]},
                      help="/etc/machine-id; must be unique per node")
+        if self.policy.get("kata", "auto") != "off":
+            snap.add("ptk_node_kata_capable", 1 if self.kata_capable else 0, {"node": node},
+                     help="1 when the node can start Kata VMs (vmx/svm and /dev/kvm)")
+            for handler in self.kata_handlers:
+                snap.add("ptk_node_kata_runtime_info", 1, {"node": node, "handler": handler},
+                         help="Kata runtime handler present in containerd config")
         for p in self.paths:
             labels = {"node": node, "wwid": str(p["wwid"]), "dm": str(p["dm"])}
             snap.add("ptk_multipath_paths", p["paths"], labels, help="Paths for a Pure multipath device")

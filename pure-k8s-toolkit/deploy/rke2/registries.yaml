@@ -1,0 +1,40 @@
+# /etc/rancher/rke2/registries.yaml on every node (all 3 servers + 13 agents),
+# then `systemctl restart rke2-server` or `rke2-agent`, one node at a time.
+#
+# Upstream references (quay.io/..., docker.io/...) resolve to Harbor projects
+# filled by `scripts/airgap-bundle.sh push-mirror`, so upstream Helm charts and
+# manifests (kata-deploy, Portworx, exporters) work without image overrides.
+# Keep the project names in sync with project_for() in that script.
+#
+# If this file already sets system-default-registry mirrors for RKE2/Rancher
+# images, merge these entries into it rather than replacing it.
+mirrors:
+  docker.io:
+    endpoint: ["https://harbor.lab.local"]
+    rewrite:
+      "^(.*)$": "dockerhub/$1"
+  quay.io:
+    endpoint: ["https://harbor.lab.local"]
+    rewrite:
+      "^(.*)$": "quay/$1"
+  registry.k8s.io:
+    endpoint: ["https://harbor.lab.local"]
+    rewrite:
+      "^(.*)$": "k8s/$1"
+  ghcr.io:
+    endpoint: ["https://harbor.lab.local"]
+    rewrite:
+      "^(.*)$": "ghcr/$1"
+  harbor.lab.local:
+    endpoint: ["https://harbor.lab.local"]
+configs:
+  harbor.lab.local:
+    # A pull-only Harbor robot account (Harbor > Robot Accounts, "pull repository"
+    # on the projects above). Nodes then need no imagePullSecrets.
+    auth:
+      username: "robot$rke2-pull"
+      password: "REPLACE_WITH_ROBOT_SECRET"
+    tls:
+      # Harbor's CA (internal PKI). RHEL nodes usually already trust it if you
+      # placed it in /etc/pki/ca-trust/source/anchors and ran update-ca-trust.
+      ca_file: /etc/pki/ca-trust/source/anchors/harbor-ca.crt

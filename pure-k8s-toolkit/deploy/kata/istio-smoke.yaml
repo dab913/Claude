@@ -1,0 +1,210 @@
+# Does Istio still enforce mTLS when pods run under Kata?
+#
+# Kata runs each pod in its own VM, so the sidecar and the traffic redirection
+# have to work inside that guest. This test runs under STRICT mTLS with a Kata
+# server and three clients:
+#   smoke-client-runc     plain runc pod with sidecar       -> should PASS
+#   smoke-client-kata     Kata pod with sidecar             -> should PASS
+#   smoke-client-nomesh   Kata pod without sidecar          -> must FAIL
+# The third one is a control: if it passes, STRICT is not being enforced and
+# the other results mean nothing.
+#
+#   kubectl apply -f deploy/kata/istio-smoke.yaml
+#   kubectl -n ptk-kata-smoke wait --for=condition=complete job/smoke-client-runc job/smoke-client-kata --timeout=5m
+#   for j in runc kata nomesh; do kubectl -n ptk-kata-smoke logs job/smoke-client-$j | tail -1; done
+#   kubectl delete namespace ptk-kata-smoke
+#
+# Set runtimeClassName to one kata-deploy created (kubectl get runtimeclass).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ptk-kata-smoke
+  labels:
+    istio-injection: enabled
+    # istio-init needs NET_ADMIN/NET_RAW when the Istio CNI plugin is not used.
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: strict
+  namespace: ptk-kata-smoke
+spec:
+  mtls: {mode: STRICT}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: smoke-server
+  namespace: ptk-kata-smoke
+spec:
+  selector: {app: smoke-server}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smoke-server
+  namespace: ptk-kata-smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: smoke-server}
+  template:
+    metadata:
+      labels: {app: smoke-server}
+      annotations:
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    spec:
+      runtimeClassName: kata-qemu
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: server
+          image: harbor.lab.local/platform/ptk:0.1.0
+          command: ["python3", "-m", "http.server", "8080", "--directory", "/opt/ptk"]
+          ports:
+            - {containerPort: 8080}
+          readinessProbe:
+            tcpSocket: {port: 8080}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+---
+# Expected: PASS (baseline)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smoke-client-runc
+  namespace: ptk-kata-smoke
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {app: smoke-client-runc}
+      annotations:
+        sidecar.istio.io/inject: "true"
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: client
+          image: harbor.lab.local/platform/ptk:0.1.0
+          command:
+            - python3
+            - -c
+            - |
+                import sys, time, urllib.request
+                direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                ok = False
+                for attempt in range(20):
+                    try:
+                        resp = direct.open("http://smoke-server:8080/", timeout=5)
+                        server = resp.headers.get("server", "")
+                        print("status", resp.status, "server header", repr(server))
+                        ok = resp.status == 200 and "envoy" in server
+                        break
+                    except Exception as exc:
+                        print("attempt", attempt, type(exc).__name__, exc)
+                        time.sleep(3)
+                try:  # stop the sidecar so the Job can complete
+                    direct.open(urllib.request.Request("http://127.0.0.1:15020/quitquitquit", method="POST"), timeout=5)
+                except Exception:
+                    pass
+                print("RESULT", "PASS" if ok else "FAIL")
+                sys.exit(0 if ok else 1)
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+---
+# Expected: PASS; if this fails but runc passes, traffic redirection does not work inside the Kata guest
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smoke-client-kata
+  namespace: ptk-kata-smoke
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {app: smoke-client-kata}
+      annotations:
+        sidecar.istio.io/inject: "true"
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    spec:
+      runtimeClassName: kata-qemu
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: client
+          image: harbor.lab.local/platform/ptk:0.1.0
+          command:
+            - python3
+            - -c
+            - |
+                import sys, time, urllib.request
+                direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                ok = False
+                for attempt in range(20):
+                    try:
+                        resp = direct.open("http://smoke-server:8080/", timeout=5)
+                        server = resp.headers.get("server", "")
+                        print("status", resp.status, "server header", repr(server))
+                        ok = resp.status == 200 and "envoy" in server
+                        break
+                    except Exception as exc:
+                        print("attempt", attempt, type(exc).__name__, exc)
+                        time.sleep(3)
+                try:  # stop the sidecar so the Job can complete
+                    direct.open(urllib.request.Request("http://127.0.0.1:15020/quitquitquit", method="POST"), timeout=5)
+                except Exception:
+                    pass
+                print("RESULT", "PASS" if ok else "FAIL")
+                sys.exit(0 if ok else 1)
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+---
+# Expected: FAIL (control: plaintext must be rejected by STRICT mTLS)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smoke-client-nomesh
+  namespace: ptk-kata-smoke
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {app: smoke-client-nomesh}
+      annotations:
+        sidecar.istio.io/inject: "false"
+        proxy.istio.io/config: '{"holdApplicationUntilProxyStarts": true}'
+    spec:
+      runtimeClassName: kata-qemu
+      restartPolicy: Never
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: client
+          image: harbor.lab.local/platform/ptk:0.1.0
+          command:
+            - python3
+            - -c
+            - |
+                import sys, time, urllib.request
+                direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                ok = False
+                for attempt in range(20):
+                    try:
+                        resp = direct.open("http://smoke-server:8080/", timeout=5)
+                        server = resp.headers.get("server", "")
+                        print("status", resp.status, "server header", repr(server))
+                        ok = resp.status == 200 and "envoy" in server
+                        break
+                    except Exception as exc:
+                        print("attempt", attempt, type(exc).__name__, exc)
+                        time.sleep(3)
+                try:  # stop the sidecar so the Job can complete
+                    direct.open(urllib.request.Request("http://127.0.0.1:15020/quitquitquit", method="POST"), timeout=5)
+                except Exception:
+                    pass
+                print("RESULT", "PASS" if ok else "FAIL")
+                sys.exit(0 if ok else 1)
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}

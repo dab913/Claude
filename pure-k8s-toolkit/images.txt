@@ -1,0 +1,12 @@
+# Images to carry into the air gap with `scripts/airgap-bundle.sh save`.
+# Pin exact tags (or digests) that match the versions you install.
+# Get chart images with:  helm template <chart> | grep -oE 'image: .*' | sort -u
+#
+# Kata Containers installer (installs Kata into /opt/kata on each node).
+# quay.io/kata-containers/kata-deploy:<version>
+#
+# Pure's FlashArray metrics exporter (array-wide metrics, complements ptk).
+# quay.io/purestorage/pure-fa-om-exporter:<version>
+#
+# Portworx operator and components: take the list from Portworx's air-gapped
+# install docs for your version.

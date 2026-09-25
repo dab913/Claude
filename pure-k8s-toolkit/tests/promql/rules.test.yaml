@@ -1,0 +1,80 @@
+# promtool unit tests for the PrometheusRule in deploy/40-monitoring.yaml.
+# Run: scripts/test-rules.sh   (extracts the rules, then runs promtool test rules)
+rule_files: [rules.yaml]
+evaluation_interval: 1m
+tests:
+  - name: cloned VMs sharing an IQN
+    interval: 1m
+    input_series:
+      - {series: 'ptk_node_iscsi_initiator_info{node="w1",iqn="iqn.1994-05.com.redhat:tmpl"}', values: "1x5"}
+      - {series: 'ptk_node_iscsi_initiator_info{node="w2",iqn="iqn.1994-05.com.redhat:tmpl"}', values: "1x5"}
+      - {series: 'ptk_node_iscsi_initiator_info{node="w3",iqn="iqn.1994-05.com.redhat:w3"}', values: "1x5"}
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: PtkDuplicateIscsiInitiator
+        exp_alerts:
+          - exp_labels: {severity: critical, iqn: "iqn.1994-05.com.redhat:tmpl"}
+            exp_annotations:
+              summary: "2 nodes share iSCSI initiator iqn.1994-05.com.redhat:tmpl"
+              description: >-
+                Usually VMs cloned from one vCenter template. The array treats them as one
+                host, so volumes can attach to the wrong node and get corrupted. Regenerate with
+                `echo "InitiatorName=$(iscsi-iname)" > /etc/iscsi/initiatorname.iscsi` and restart iscsid.
+
+  - name: degraded path is attributed to the PVC; unknown WWIDs still alert
+    interval: 1m
+    input_series:
+      # node-check series carry the scrape target's namespace; audit series carry the PVC's (honorLabels).
+      - {series: 'ptk_multipath_paths_running{node="w1",wwid="3624a9370aa",dm="dm-3",namespace="ptk-system"}', values: "1x10"}
+      - {series: 'ptk_multipath_paths_running{node="w2",wwid="3624a9370bb",dm="dm-4",namespace="ptk-system"}', values: "1x10"}
+      - {series: 'ptk_multipath_paths_running{node="w3",wwid="3624a9370cc",dm="dm-5",namespace="ptk-system"}', values: "4x10"}
+      - {series: 'ptk_pvc_volume_info{wwid="3624a9370aa",namespace="db",pvc="data-pg-0",pv="pvc-1",array="fa01",array_volume="px-pvc-1",storageclass="px-fada"}', values: "1x10"}
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PtkMultipathDegraded
+        exp_alerts:
+          - exp_labels: {severity: critical, node: w1, wwid: "3624a9370aa", dm: dm-3, namespace: db, pvc: data-pg-0}
+            exp_annotations:
+              summary: "w1: db/data-pg-0 volume 3624a9370aa has 1 running path(s)"
+          - exp_labels: {severity: critical, node: w2, wwid: "3624a9370bb", dm: dm-4}
+            exp_annotations:
+              summary: "w2: volume 3624a9370bb has 1 running path(s)"
+
+  - name: Kata configured on a VM without nested virtualization
+    interval: 1m
+    input_series:
+      - {series: 'ptk_node_kata_capable{node="w1"}', values: "0x40"}   # kata-deploy ran, vCenter HV not exposed
+      - {series: 'ptk_node_kata_capable{node="w2"}', values: "1x40"}
+      - {series: 'ptk_node_kata_capable{node="cp1"}', values: "0x40"}  # control plane: no Kata, no alert
+      - {series: 'ptk_node_kata_runtime_info{node="w1",handler="kata-qemu"}', values: "1x40"}
+      - {series: 'ptk_node_kata_runtime_info{node="w2",handler="kata-qemu"}', values: "1x40"}
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: PtkKataNodeNotCapable
+        exp_alerts:
+          - exp_labels: {severity: critical, node: w1}
+            exp_annotations:
+              summary: "w1 has Kata configured but no nested virtualization (/dev/kvm)"
+              description: >-
+                Power the VM off in vCenter and enable CPU > 'Expose hardware assisted
+                virtualization to the guest OS', or keep Kata pods off this node.
+      - eval_time: 31m
+        alertname: PtkKataCoverageLow
+        exp_alerts:
+          - exp_labels: {severity: warning, handler: kata-qemu}
+            exp_annotations:
+              summary: "Only 1 working node(s) offer Kata handler kata-qemu; no room to drain one"
+
+  - name: node-check missing on a node
+    interval: 1m
+    input_series:
+      - {series: 'kube_node_info{node="w1"}', values: "1x40"}
+      - {series: 'kube_node_info{node="w2"}', values: "1x40"}
+      - {series: 'ptk_node_ready{node="w1"}', values: "1x40"}
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: PtkNodeCheckMissing
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "1 node(s) are not reporting ptk node checks"

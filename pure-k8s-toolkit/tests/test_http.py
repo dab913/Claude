@@ -59,6 +59,7 @@ class HttpTest(unittest.TestCase):
             self.assertEqual([v["name"] for v in fa.volumes()], ["px-a", "px-b"])
         finally:
             server.shutdown()
+            server.server_close()
 
     def test_exporter_serves_metrics(self):
         exp = Exporter(0)
@@ -73,6 +74,7 @@ class HttpTest(unittest.TestCase):
             self.assertEqual(json.load(DIRECT.open(base + "/report")), {"k": 1})
         finally:
             server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":
