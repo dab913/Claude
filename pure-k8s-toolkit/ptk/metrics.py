@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 def _escape(value: str) -> str:
@@ -45,8 +45,9 @@ class Snapshot:
 class Exporter:
     """Serves /metrics, /healthz and /report (latest JSON report)."""
 
-    def __init__(self, port: int) -> None:
+    def __init__(self, port: int, ready: Optional[Callable[[], bool]] = None) -> None:
         self.port = port
+        self._ready = ready
         self._lock = threading.Lock()
         self._metrics = "# no data yet\n"
         self._report: object = {}
@@ -68,8 +69,11 @@ class Exporter:
                     self._send(200, "text/plain; version=0.0.4", metrics)
                 elif self.path == "/report":
                     self._send(200, "application/json", json.dumps(report, indent=2))
-                elif self.path in ("/healthz", "/readyz"):
+                elif self.path == "/healthz":
                     self._send(200, "text/plain", "ok\n")
+                elif self.path == "/readyz":
+                    ok = exporter._ready() if exporter._ready else True
+                    self._send(200 if ok else 503, "text/plain", "ok\n" if ok else "not ready\n")
                 else:
                     self._send(404, "text/plain", "not found\n")
 

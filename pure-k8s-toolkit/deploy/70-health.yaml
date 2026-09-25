@@ -1,0 +1,181 @@
+# ptk health: cluster-level red/yellow/green checks, running where it does not
+# depend on the Service network it is checking: host network on a control-plane
+# node, API at 127.0.0.1:6443, etcd at 127.0.0.1:2379, DNS from the node.
+#
+# For when the cluster is too broken to schedule this, run the same checks from
+# podman on c01: deploy/health/ptk-health.service (+ .timer).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ptk-health
+  namespace: ptk-system
+data:
+  config.json: |
+    {
+      "cluster_name": "morpheus-net-rke2",
+      "node_count_total": 16,
+      "control_plane_nodes": [
+        {
+          "name": "c01.morpheus.net",
+          "ip": "10.5.5.140"
+        },
+        {
+          "name": "c02.morpheus.net",
+          "ip": "10.5.5.141"
+        },
+        {
+          "name": "c03.morpheus.net",
+          "ip": "10.5.5.142"
+        }
+      ],
+      "kubernetes_service_ip": "10.43.0.1",
+      "api_lb_url": "https://rke2-api.morpheus.net:9345",
+      "rancher": {
+        "url": "https://rancher.morpheus.net",
+        "namespace": "cattle-system"
+      },
+      "harbor_url": "https://valhalla.morpheus.net",
+      "haproxy_stats_url": "",
+      "intended_cni": "cilium",
+      "undesired_cnis": [
+        "canal",
+        "calico",
+        "flannel"
+      ],
+      "ingress_daemonset": "kube-system/rke2-ingress-nginx-controller",
+      "image_pull_namespaces": [
+        "kube-system",
+        "cattle-system"
+      ],
+      "timeout": 5,
+      "runbooks": {
+        "etcd_stale_member": "docs/runbooks/etcd-remove-stale-member.md"
+      },
+      "kube": {
+        "api": "https://127.0.0.1:6443",
+        "token_file": "/var/run/secrets/kubernetes.io/serviceaccount/token",
+        "ca_file": "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+      },
+      "etcd": {
+        "endpoint": "https://127.0.0.1:2379",
+        "ca_file": "/etc/ptk/etcd/server-ca.crt",
+        "cert_file": "/etc/ptk/etcd/server-client.crt",
+        "key_file": "/etc/ptk/etcd/server-client.key",
+        "known_unintended_members": [
+          {
+            "id": "911dd1653e70620",
+            "name": "w08.morpheus.net",
+            "ip": "10.5.5.158"
+          }
+        ]
+      },
+      "ca_file": "/etc/ptk/ca/ca-bundle.crt"
+    }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ptk-health
+  namespace: ptk-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ptk-health
+rules:
+  - apiGroups: [""]
+    resources: [nodes, pods, endpoints, events, services]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [daemonsets, deployments]
+    verbs: [get, list]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list]
+  - apiGroups: [helm.cattle.io]
+    resources: [helmcharts]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ptk-health
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: ptk-health}
+subjects:
+  - {kind: ServiceAccount, name: ptk-health, namespace: ptk-system}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ptk-health
+  namespace: ptk-system
+  labels: {app.kubernetes.io/name: ptk-health}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}          # hostNetwork port 9112
+  selector:
+    matchLabels: {app.kubernetes.io/name: ptk-health}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: ptk-health}
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: ptk-health
+      hostNetwork: true
+      dnsPolicy: Default                # node resolver: works even when CoreDNS does not
+      priorityClassName: system-cluster-critical
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true"
+      affinity:
+        nodeAffinity:
+          # Belt and braces against a stale label (w08): only the real controllers.
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [c01.morpheus.net, c02.morpheus.net, c03.morpheus.net]
+      tolerations:
+        - {key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}
+        - {key: node-role.kubernetes.io/etcd, operator: Exists, effect: NoExecute}
+        - {key: CriticalAddonsOnly, operator: Exists}
+      securityContext:
+        runAsUser: 0                    # etcd client key is root-only (0600)
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: health
+          image: valhalla.morpheus.net/platform/ptk:0.1.0
+          args: ["health", "--config", "/etc/ptk/health/config.json"]
+          ports:
+            - {name: metrics, containerPort: 9112}
+          readinessProbe:
+            httpGet: {path: /healthz, port: metrics}
+          resources:
+            requests: {cpu: 10m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/ptk/health}
+            - {name: etcd-ca, mountPath: /etc/ptk/etcd/server-ca.crt, readOnly: true}
+            - {name: etcd-cert, mountPath: /etc/ptk/etcd/server-client.crt, readOnly: true}
+            - {name: etcd-key, mountPath: /etc/ptk/etcd/server-client.key, readOnly: true}
+            - {name: host-ca, mountPath: /etc/ptk/ca/ca-bundle.crt, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: ptk-health}
+        # etcd client credentials give full read/write access to etcd. Only cluster
+        # admins should be able to exec into, or edit, workloads in ptk-system.
+        - name: etcd-ca
+          hostPath: {path: /var/lib/rancher/rke2/server/tls/etcd/server-ca.crt, type: File}
+        - name: etcd-cert
+          hostPath: {path: /var/lib/rancher/rke2/server/tls/etcd/server-client.crt, type: File}
+        - name: etcd-key
+          hostPath: {path: /var/lib/rancher/rke2/server/tls/etcd/server-client.key, type: File}
+        # The node's trust store, so probes to rancher.morpheus.net and
+        # valhalla.morpheus.net verify against your internal CA.
+        - name: host-ca
+          hostPath: {path: /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem, type: File}

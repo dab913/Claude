@@ -162,5 +162,37 @@ class NodeCheckTest(unittest.TestCase):
         self.assertNotIn("cni.config", results)
 
 
+    # -- Service routing from the pod network --------------------------------
+
+    def _routes(self, https_ok, dns_ok):
+        from unittest import mock
+
+        from ptk import probes
+        def https(url, **kw):
+            return {"reachable": https_ok, "status": 401 if https_ok else 0, "latency_ms": 2.0,
+                    "error": "" if https_ok else "timed out"}
+        def dns(name, **kw):
+            return {"reachable": dns_ok, "addresses": ["10.43.0.1"] if dns_ok else [], "latency_ms": 1.0,
+                    "error": "" if dns_ok else "temporary failure in name resolution"}
+        policy = {"service_probes": ["https://10.43.0.1:443/version", "kubernetes.default.svc.cluster.local"]}
+        with mock.patch.object(probes, "https", side_effect=https), mock.patch.object(probes, "dns", side_effect=dns):
+            return check(policy=policy)
+
+    def test_service_routes_ok_even_on_401(self):
+        c, results = self._routes(True, True)
+        self.assertEqual(results["route.10.43.0.1:443"].status, "ok")
+        self.assertEqual(results["route.dns:kubernetes.default.svc.cluster.local"].status, "ok")
+        self.assertTrue(c.routes_ok())
+        self.assertIn('ptk_node_service_route_ok{node="w13",target="10.43.0.1:443"} 1', c.metrics("w13").render())
+
+    def test_service_route_timeout_fails_and_marks_unready(self):
+        # rancher-webhook on w13: "Get https://10.43.0.1/version ... i/o timeout"
+        c, results = self._routes(False, False)
+        self.assertEqual(results["route.10.43.0.1:443"].status, "fail")
+        self.assertIn("Cilium agent", results["route.10.43.0.1:443"].message)
+        self.assertFalse(c.routes_ok())
+        self.assertIn('ptk_node_service_route_ok{node="w13",target="10.43.0.1:443"} 0', c.metrics("w13").render())
+
+
 if __name__ == "__main__":
     unittest.main()

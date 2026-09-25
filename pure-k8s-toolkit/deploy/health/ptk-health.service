@@ -1,0 +1,32 @@
+# Out-of-band cluster health checks on a control-plane node (c01), independent of
+# Kubernetes scheduling, Cilium and CoreDNS. Install on c01 (optionally c02 too):
+#
+#   podman pull valhalla.morpheus.net/platform/ptk:0.1.0
+#   install -d -m 0700 /etc/ptk /var/lib/ptk
+#   install -m 0600 deploy/health/morpheus-net.podman.json /etc/ptk/health.json
+#   install -m 0644 deploy/health/ptk-health.service deploy/health/ptk-health.timer /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now ptk-health.timer
+#
+#   journalctl -u ptk-health -n 60        # latest red/yellow/green summary
+#   cat /var/lib/ptk/health.json          # full machine-readable report
+#
+# Runs as root with RKE2's admin client certificate and etcd client certificate,
+# mounted read-only: the same access as `kubectl` with /etc/rancher/rke2/rke2.yaml.
+[Unit]
+Description=ptk cluster health checks (etcd, API, Cilium, roles, Rancher, ingress, HAProxy, Harbor)
+After=rke2-server.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Exit codes 1 (yellow) and 2 (red) are results, not service failures.
+SuccessExitStatus=1 2
+ExecStart=/usr/bin/podman run --rm --network host --user 0 --security-opt label=disable \
+  --read-only --cap-drop ALL --pull never \
+  -v /etc/ptk/health.json:/etc/ptk/health.json:ro \
+  -v /var/lib/rancher/rke2/server/tls:/rke2-tls:ro \
+  -v /var/lib/rancher/rke2/server/manifests:/rke2-manifests:ro \
+  -v /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem:/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem:ro \
+  -v /var/lib/ptk:/out \
+  valhalla.morpheus.net/platform/ptk:0.1.0 \
+  health --once --config /etc/ptk/health.json --output /out/health.json

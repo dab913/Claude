@@ -1,6 +1,7 @@
 import json
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -72,6 +73,23 @@ class HttpTest(unittest.TestCase):
             body = DIRECT.open(base + "/metrics").read().decode()
             self.assertIn('ptk_x{a="q\\"uote"} 1', body)
             self.assertEqual(json.load(DIRECT.open(base + "/report")), {"k": 1})
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+    def test_readyz_follows_callback(self):
+        state = {"ok": False}
+        exp = Exporter(0, ready=lambda: state["ok"])
+        server = exp.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_port}"
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                DIRECT.open(base + "/readyz")
+            self.assertEqual(ctx.exception.code, 503)
+            self.assertEqual(DIRECT.open(base + "/healthz").status, 200)  # liveness unaffected
+            state["ok"] = True
+            self.assertEqual(DIRECT.open(base + "/readyz").status, 200)
         finally:
             server.shutdown()
             server.server_close()

@@ -1,0 +1,62 @@
+{
+  "cluster_name": "morpheus-net-rke2",
+  "node_count_total": 16,
+  "control_plane_nodes": [
+    {
+      "name": "c01.morpheus.net",
+      "ip": "10.5.5.140"
+    },
+    {
+      "name": "c02.morpheus.net",
+      "ip": "10.5.5.141"
+    },
+    {
+      "name": "c03.morpheus.net",
+      "ip": "10.5.5.142"
+    }
+  ],
+  "kubernetes_service_ip": "10.43.0.1",
+  "api_lb_url": "https://rke2-api.morpheus.net:9345",
+  "rancher": {
+    "url": "https://rancher.morpheus.net",
+    "namespace": "cattle-system"
+  },
+  "harbor_url": "https://valhalla.morpheus.net",
+  "haproxy_stats_url": "",
+  "intended_cni": "cilium",
+  "undesired_cnis": [
+    "canal",
+    "calico",
+    "flannel"
+  ],
+  "ingress_daemonset": "kube-system/rke2-ingress-nginx-controller",
+  "image_pull_namespaces": [
+    "kube-system",
+    "cattle-system"
+  ],
+  "timeout": 5,
+  "runbooks": {
+    "etcd_stale_member": "docs/runbooks/etcd-remove-stale-member.md"
+  },
+  "kube": {
+    "api": "https://127.0.0.1:6443",
+    "ca_file": "/rke2-tls/server-ca.crt",
+    "cert_file": "/rke2-tls/client-admin.crt",
+    "key_file": "/rke2-tls/client-admin.key"
+  },
+  "etcd": {
+    "endpoint": "https://127.0.0.1:2379",
+    "ca_file": "/rke2-tls/etcd/server-ca.crt",
+    "cert_file": "/rke2-tls/etcd/server-client.crt",
+    "key_file": "/rke2-tls/etcd/server-client.key",
+    "known_unintended_members": [
+      {
+        "id": "911dd1653e70620",
+        "name": "w08.morpheus.net",
+        "ip": "10.5.5.158"
+      }
+    ]
+  },
+  "rke2_manifests_dir": "/rke2-manifests",
+  "ca_file": "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+}

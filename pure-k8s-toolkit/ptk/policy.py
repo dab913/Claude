@@ -50,6 +50,10 @@ DEFAULT_POLICY: Dict[str, Any] = {
     "scheduler": "none",
     # Expected sole CNI ("cilium", "canal", "calico", ...). Empty skips the check.
     "cni": "",
+    # Probed from the pod network every cycle (DaemonSet only). https:// targets are
+    # Service IPs; bare names are resolved through cluster DNS. Empty disables.
+    "service_probes": [],
+    "service_probe_timeout": 3,
     # rke2-server nodes are expected to run embedded etcd.
     "etcd_on_servers": True,
     # Kata Containers readiness: "auto" fails only on nodes whose containerd has a

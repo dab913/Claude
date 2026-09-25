@@ -6,6 +6,7 @@ One small container image with three jobs, built for an air-gapped RKE2 cluster 
 |---|---|---|
 | `ptk node-check` | DaemonSet on all 16 nodes | Is this node's multipath / iSCSI / NVMe-TCP stack set up the way Pure expects? Are all paths to every attached volume up? Can this VM run Kata Containers? |
 | `ptk audit` | Deployment (1 replica) | Which namespace/PVC owns each array volume, and how well does it reduce? Which array volumes have no PV any more (orphans)? Which PVs point at a missing or destroyed volume? |
+| `ptk health` | Deployment on a control-plane node (host network), or podman + systemd timer on c01 | Red/yellow/green for etcd, API reachability, Cilium, node roles, Rancher, ingress, HAProxy and Harbor, with the reason for every non-green result. |
 | `ptk bench` | Job | What IOPS, throughput and p99 latency does each StorageClass deliver, and how much does running the pod under Kata cost? |
 
 It fills gaps the stack you already have doesn't cover. Rancher sees PVCs but not the array. The FlashArray UI sees volumes but not namespaces. Neither checks the node settings in between, and those settings are where most FlashArray-on-Linux problems come from.
@@ -26,12 +27,45 @@ It does not replace:
 
 Layout: three controllers `c01`–`c03` (10.5.5.140–142) running `rke2-server` with embedded etcd, and workers `w01`–`w13` running `rke2-agent`. RKE2 has `cni: none`, and Cilium, managed separately, is the only CNI. `lb01` (10.5.5.150, HAProxy) fronts `rke2-api.morpheus.net:9345` and `rancher.morpheus.net`. Images come from Harbor at `valhalla.morpheus.net`.
 
+### Cluster health (`ptk health`)
+
+`ptk health` answers "what's broken and where" for this cluster. It checks eight areas:
+
+- **etcd:** members vs. c01–c03, health, leader, quorum and failure tolerance, peer port 2380.
+- **API:** each controller's `:6443`, the supervisor through lb01, the `kubernetes` Service endpoints, and `10.43.0.1:443` from the host.
+- **Cilium:** agents per node, the operator, and Canal/Calico/Flannel artifacts. It also covers per-node pod routing to `10.43.0.1:443`, measured by node-check.
+- **Node roles:** role labels vs. RKE2 mode vs. etcd membership.
+- **Rancher:** the Rancher pods, rancher-webhook endpoints, `:9443` probe failures, webhook-call errors in events, and `https://rancher.morpheus.net/ping`.
+- **Ingress:** the controller DaemonSet.
+- **HAProxy:** backends, from its stats page if configured, otherwise each controller's 9345.
+- **Harbor:** `/api/v2.0/health`, plus image-pull failures in `kube-system` and `cattle-system`.
+
+It never depends on the Service network it's diagnosing:
+- it uses the host network on a controller;
+- it reaches the API at `127.0.0.1:6443` and etcd at `127.0.0.1:2379`;
+- it resolves names through the node's own DNS, not CoreDNS.
+
+Every check has a timeout, and one broken check doesn't stop the others.
+
+Two ways to run it:
+
+- **In-cluster, continuously:** `kubectl apply -f deploy/70-health.yaml` (pinned to c01–c03). Metrics on `:9112` feed the `ptk.health` alerts; `/report` returns the full JSON.
+- **Out of band, when the cluster is too broken to schedule pods:** the podman service and timer in [`deploy/health/`](deploy/health/) run the same checks on c01 every 5 minutes. They write `/var/lib/ptk/health.json` and put the summary in `journalctl -u ptk-health`. For an immediate check, run the `ExecStart` line by hand. The exit code is 0 for green, 1 for yellow and 2 for red.
+
+Both modes use etcd's client certificate, which grants full etcd access. Keep `ptk-system` restricted to cluster admins.
+
+Per-node Service routing comes from node-check. Each node-check pod probes `10.43.0.1:443` and `kubernetes.default.svc.cluster.local` from the pod network and reports NotReady when either fails. `ptk health` reads that readiness from the API, so it sees which nodes are affected without scraping across the broken dataplane.
+
+Runbooks:
+- [Cilium agents not Ready → Service routing → Rancher down](docs/runbooks/cilium-service-routing.md)
+- [Removing the stale w08 etcd member](docs/runbooks/etcd-remove-stale-member.md)
+
 ### etcd membership and node roles
 
 - **Before any control-plane maintenance**, run [`scripts/etcd-members.sh`](scripts/etcd-members.sh) on a controller. It's read-only. It lists every etcd member, flags any whose IP isn't one of the three controllers, and shows how many more failures etcd can survive.
 - **Removing a stale member** (the current w08 exception): follow [`docs/runbooks/etcd-remove-stale-member.md`](docs/runbooks/etcd-remove-stale-member.md). Remove the membership first, verify it, and only then clean up the node's labels.
 - node-check reports what each host actually runs (`rke2 server` or `rke2 agent`, and whether etcd is running). Two alerts build on that:
-  - `PtkEtcdMemberCount` fires when the number of nodes running etcd isn't 3.
+  - `PtkEtcdProcessCount` fires when the number of nodes running an etcd process isn't 3.
   - `PtkNodeRoleMismatch` fires when a node carries etcd or control-plane labels but runs `rke2-agent`. That describes w08 until the runbook is finished.
 - The host view can't see an etcd member that exists but runs nowhere. That's exactly w08's case, which is why the script exists alongside the alerts.
 

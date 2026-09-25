@@ -13,7 +13,7 @@ import re
 import socket
 from typing import Dict, List, Optional
 
-from ptk import multipath
+from ptk import multipath, probes
 from ptk.metrics import Snapshot
 
 OK, WARN, FAIL, INFO = "ok", "warn", "fail", "info"
@@ -46,6 +46,7 @@ class NodeChecker:
         self.rke2_mode = ""
         self.etcd_running = False
         self.cni_configs: List[Dict[str, object]] = []
+        self.route_results: List[Dict[str, object]] = []
 
     # -- helpers -----------------------------------------------------------
 
@@ -86,6 +87,7 @@ class NodeChecker:
         self.results, self.info, self.paths = [], {}, []
         self.kata_handlers, self.kata_capable = [], False
         self.rke2_mode, self.etcd_running, self.cni_configs = "", False, []
+        self.route_results: List[Dict[str, object]] = []
         protocol = self.policy.get("protocol", "any")
         procs = self._processes()
         mods = self._modules()
@@ -100,7 +102,34 @@ class NodeChecker:
         self._check_devices(conf)
         if self.policy.get("kata", "auto") != "off":
             self._check_kata(mods)
+        if self.policy.get("service_probes"):
+            self._check_service_routes(self.policy["service_probes"])
         return self.results
+
+    def routes_ok(self) -> bool:
+        """False when this pod could not reach a probed Service; drives /readyz so the
+        cluster health checker can read per-node routing from pod readiness."""
+        return all(r["reachable"] for r in self.route_results)
+
+    def _check_service_routes(self, targets: List[str]) -> None:
+        """Pod-network probes. Any HTTP answer (even 401) means Service routing works;
+        a timeout means the dataplane on this node (Cilium) is not delivering."""
+        timeout = float(self.policy.get("service_probe_timeout", 3))
+        for target in targets:
+            if target.startswith("https://"):
+                r = probes.https(target, timeout=timeout, verify=False)
+                label = target.split("//", 1)[1].split("/", 1)[0]
+            else:
+                r = probes.dns(target, timeout=timeout)
+                label = f"dns:{target}"
+            self.route_results.append({"target": label, "reachable": bool(r["reachable"]),
+                                       "latency_ms": r["latency_ms"], "error": r["error"]})
+            if r["reachable"]:
+                self._add(f"route.{label}", OK, f"{label} reachable from this node's pod network ({r['latency_ms']} ms)")
+            else:
+                self._add(f"route.{label}", FAIL,
+                          f"{label} unreachable from this node's pod network: {r['error']}; "
+                          "check the Cilium agent on this node")
 
     def _check_kernel(self, mods: set, protocol: str) -> None:
         if "dm_multipath" in mods:
@@ -391,6 +420,10 @@ class NodeChecker:
         if "machine_id" in self.info:
             snap.add("ptk_node_machine_id_info", 1, {"node": node, "machine_id": self.info["machine_id"]},
                      help="/etc/machine-id; must be unique per node")
+        for r in self.route_results:
+            snap.add("ptk_node_service_route_ok", 1 if r["reachable"] else 0, {"node": node, "target": str(r["target"])},
+                     help="1 if this node's pod network reached the target (Service IP or DNS name)")
+            snap.add("ptk_node_service_route_latency_ms", float(r["latency_ms"]), {"node": node, "target": str(r["target"])})
         if self.rke2_mode:
             snap.add("ptk_node_rke2_mode_info", 1, {"node": node, "mode": self.rke2_mode},
                      help="RKE2 service running on this host (server or agent)")

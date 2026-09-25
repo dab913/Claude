@@ -120,5 +120,6 @@ chmod 700 /root/rke2-server-stale-*
 ## Related checks this cluster should keep passing
 
 - `scripts/etcd-members.sh`: run it before any control-plane maintenance.
-- `PtkEtcdMemberCount`: fires when the number of nodes running etcd isn't 3.
+- `PtkEtcdMemberCount`, `PtkEtcdUnexpectedMember`, `PtkEtcdNoFailureTolerance`: from `ptk health`, which reads real etcd membership. They fire today and clear after step 5.
+- `PtkEtcdProcessCount`: fires when the number of nodes running an etcd process isn't 3.
 - `PtkNodeRoleMismatch`: fires when a node's role labels don't match what the host runs.

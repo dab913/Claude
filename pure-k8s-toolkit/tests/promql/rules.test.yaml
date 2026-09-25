@@ -113,9 +113,81 @@ tests:
       - {series: 'ptk_node_etcd_running{node="w08.morpheus.net"}', values: "0x15"}
     alert_rule_test:
       - eval_time: 11m
-        alertname: PtkEtcdMemberCount
+        alertname: PtkEtcdProcessCount
         exp_alerts:
           - exp_labels: {severity: critical}
             exp_annotations:
               summary: "2 nodes run etcd; this cluster expects exactly 3 (c01, c02, c03)"
               description: "Run scripts/etcd-members.sh on a control-plane node to see the actual membership."
+
+  - name: health checker during the morpheus.net incident
+    interval: 1m
+    input_series:
+      - {series: 'ptk_etcd_members', values: "4x15"}
+      - {series: 'ptk_etcd_failure_tolerance', values: "0x15"}
+      - {series: 'ptk_etcd_has_leader', values: "1x15"}
+      - {series: 'ptk_etcd_member_healthy{member_id="911dd1653e70620",host="w08.morpheus.net",expected="false"}', values: "0x15"}
+      - {series: 'ptk_etcd_member_healthy{member_id="3e9",host="c01.morpheus.net",expected="true"}', values: "1x15"}
+      - {series: 'ptk_cilium_agents_ready', values: "7x15"}
+      - {series: 'ptk_cilium_agents_desired', values: "16x15"}
+      - {series: 'ptk_health_area_status{area="rancher"}', values: "2x15"}
+      - {series: 'ptk_health_area_status{area="harbor"}', values: "0x15"}
+      - {series: 'ptk_node_service_route_ok{node="w13.morpheus.net",target="10.43.0.1:443"}', values: "0x15"}
+      - {series: 'ptk_node_service_route_ok{node="c01.morpheus.net",target="10.43.0.1:443"}', values: "1x15"}
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PtkEtcdMemberCount
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "etcd has 4 members; this cluster is designed for exactly 3 (c01, c02, c03)"
+      - eval_time: 1m
+        alertname: PtkEtcdUnexpectedMember
+        exp_alerts:
+          - exp_labels: {severity: critical, member_id: "911dd1653e70620", host: w08.morpheus.net, expected: "false"}
+            exp_annotations:
+              summary: "etcd member 911dd1653e70620 (w08.morpheus.net) is not a control-plane node"
+              description: "Remove the membership first, then its role labels: docs/runbooks/etcd-remove-stale-member.md"
+      - eval_time: 3m
+        alertname: PtkEtcdNoFailureTolerance
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "etcd cannot survive another member failure (tolerance 0); pause control-plane maintenance"
+      - eval_time: 3m
+        alertname: PtkEtcdNoLeader
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: PtkCiliumAgentsNotReady
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "Only 7 Cilium agents Ready; pods on the other nodes lose Service routing"
+      - eval_time: 4m
+        alertname: PtkServiceRouteBroken
+        exp_alerts:
+          - exp_labels: {severity: critical, node: w13.morpheus.net, target: "10.43.0.1:443"}
+            exp_annotations:
+              summary: "Pods on w13.morpheus.net cannot reach 10.43.0.1:443"
+              description: >-
+                Service routing on this node is broken (the rancher-webhook failure mode:
+                GET https://10.43.0.1/version i/o timeout). Check the Cilium agent on the node.
+      - eval_time: 6m
+        alertname: PtkHealthAreaRed
+        exp_alerts:
+          - exp_labels: {severity: critical, area: rancher}
+            exp_annotations:
+              summary: "rancher is RED"
+              description: "Details: curl http://<control-plane-node>:9112/report, or journalctl -u ptk-health on c01."
+
+  - name: leader churn
+    interval: 5m
+    input_series:
+      - {series: 'ptk_etcd_raft_term', values: "10 11 12 13 14 15 15 15 15 15 15 15"}
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: PtkEtcdLeaderChurn
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "5 etcd leader elections in the last hour; check peer connectivity on TCP 2380"
