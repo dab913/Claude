@@ -1,0 +1,103 @@
+# For Rancher Monitoring (rancher-monitoring / kube-prometheus-stack).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: ptk
+  namespace: ptk-system
+spec:
+  selector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [ptk-node-check, ptk-audit]}
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 60s
+      # Keep ptk's own namespace/pvc labels (the PVC's namespace) instead of
+      # renaming them to exported_namespace; alerts join on them.
+      honorLabels: true
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ptk
+  namespace: ptk-system
+spec:
+  groups:
+    - name: ptk.node
+      rules:
+        - alert: PtkDuplicateIscsiInitiator
+          expr: count by (iqn) (ptk_node_iscsi_initiator_info) > 1
+          labels: {severity: critical}
+          annotations:
+            summary: "{{ $value }} nodes share iSCSI initiator {{ $labels.iqn }}"
+            description: >-
+              Usually VMs cloned from one vCenter template. The array treats them as one
+              host, so volumes can attach to the wrong node and get corrupted. Regenerate with
+              `echo "InitiatorName=$(iscsi-iname)" > /etc/iscsi/initiatorname.iscsi` and restart iscsid.
+        - alert: PtkDuplicateNvmeHostNqn
+          expr: count by (hostnqn) (ptk_node_nvme_hostnqn_info) > 1
+          labels: {severity: critical}
+          annotations:
+            summary: "{{ $value }} nodes share NVMe host NQN {{ $labels.hostnqn }}"
+        - alert: PtkDuplicateMachineId
+          expr: count by (machine_id) (ptk_node_machine_id_info) > 1
+          labels: {severity: warning}
+          annotations:
+            summary: "{{ $value }} nodes share /etc/machine-id (cloned VMs)"
+        - alert: PtkNodeStorageCheckFailed
+          expr: ptk_node_check_status == 2
+          for: 10m
+          labels: {severity: critical}
+          annotations:
+            summary: "{{ $labels.node }}: storage check {{ $labels.check }} failing"
+            description: "curl <pod-ip>:9110/report on the node's ptk-node-check pod for details."
+        - alert: PtkNodeStorageCheckWarning
+          expr: ptk_node_check_status == 1
+          for: 1h
+          labels: {severity: warning}
+          annotations:
+            summary: "{{ $labels.node }}: storage check {{ $labels.check }} not at Pure recommended value"
+        - alert: PtkNodeCheckMissing
+          expr: count(kube_node_info) - count(ptk_node_ready) > 0
+          for: 30m
+          labels: {severity: warning}
+          annotations:
+            summary: "{{ $value }} node(s) are not reporting ptk node checks"
+        - alert: PtkMultipathDegraded
+          # Adds namespace/pvc when the audit knows the volume; falls back to wwid.
+          expr: >-
+            ((ptk_multipath_paths_running < 2) * on (wwid) group_left (namespace, pvc) ptk_pvc_volume_info)
+            or ((ptk_multipath_paths_running < 2) unless on (wwid) ptk_pvc_volume_info)
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: "{{ $labels.node }}: {{ $labels.namespace }}/{{ $labels.pvc }} ({{ $labels.wwid }}) has {{ $value }} running path(s)"
+    - name: ptk.audit
+      rules:
+        - alert: PtkPvMissingOnArray
+          expr: ptk_pv_missing_on_array == 1
+          for: 15m
+          labels: {severity: critical}
+          annotations:
+            summary: "PV {{ $labels.pv }} ({{ $labels.namespace }}/{{ $labels.pvc }}) has no volume on any FlashArray"
+        - alert: PtkPvVolumeDestroyed
+          expr: ptk_pv_volume_destroyed == 1
+          labels: {severity: critical}
+          annotations:
+            summary: "Volume for {{ $labels.namespace }}/{{ $labels.pvc }} is in the destroyed bucket on {{ $labels.array }}; recover it before eradication"
+        - alert: PtkOrphanArrayVolumes
+          expr: ptk_array_orphan_volumes > 0
+          for: 24h
+          labels: {severity: warning}
+          annotations:
+            summary: "{{ $value }} CSI-created FlashArray volume(s) have no PV. See /report on ptk-audit."
+        - alert: PtkArrayApiDown
+          expr: ptk_array_up == 0
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: "ptk-audit cannot reach FlashArray {{ $labels.array }}: {{ $labels.error }}"
+        - alert: PtkAuditStale
+          expr: time() - ptk_audit_last_success_timestamp_seconds > 3600
+          labels: {severity: warning}
+          annotations:
+            summary: "ptk-audit has not completed a full pass in over an hour"

@@ -130,3 +130,7 @@ tests/               python -m unittest discover -s tests
 ```
 
 To add another booking source, implement `search`, `refresh_offer` and `book` from `providers/base.py`.
+
+## Also in this repo
+
+- [`pure-k8s-toolkit/`](pure-k8s-toolkit/): a container image for RKE2 clusters with Pure FlashArray storage (node multipath checks, PVC-to-array audit, fio benchmarks).

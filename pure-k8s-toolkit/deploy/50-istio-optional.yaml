@@ -1,0 +1,33 @@
+# Only needed if you enable sidecar injection for ptk-system (for example,
+# because a mesh-wide policy requires it). Not applied by default.
+#
+# 1. With meshConfig.outboundTrafficPolicy.mode=REGISTRY_ONLY, the audit
+#    sidecar blocks calls to the FlashArray management address unless the
+#    mesh knows about it.
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: flasharray-mgmt
+  namespace: ptk-system
+spec:
+  hosts: ["fa01-mgmt.example.local"]
+  addresses: ["10.0.50.10/32"]       # FlashArray management VIP
+  ports:
+    - {number: 443, name: https, protocol: TLS}
+  location: MESH_EXTERNAL
+  resolution: DNS
+  exportTo: ["."]
+---
+# 2. Rancher Monitoring's Prometheus runs outside the mesh. Under STRICT
+#    mTLS it cannot scrape the metrics port unless that port allows plaintext.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: ptk-metrics
+  namespace: ptk-system
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: ptk-audit}
+  mtls: {mode: STRICT}
+  portLevelMtls:
+    9111: {mode: PERMISSIVE}

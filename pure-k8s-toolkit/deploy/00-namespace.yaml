@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ptk-system
+  labels:
+    # node-check needs hostPID and read-only hostPath mounts.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+    # Nothing here serves mesh traffic. Skipping sidecars keeps the 16
+    # DaemonSet pods light and lets bench Jobs complete. To mesh the audit
+    # Deployment anyway, see 50-istio-optional.yaml.
+    istio-injection: disabled

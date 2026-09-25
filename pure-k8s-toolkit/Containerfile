@@ -1,0 +1,28 @@
+# ptk: Pure Storage toolkit for RKE2 on RHEL 9.
+#
+# Runtime has no pip dependencies (stdlib only), so the build needs just the
+# UBI base image and two RPMs. Build on a connected host, then carry the image
+# into the air gap with scripts/airgap-bundle.sh.
+#
+# Building with podman on a subscribed RHEL host also gives the build full RHEL
+# repos through host entitlements, if your UBI mirror lacks fio.
+ARG BASE_IMAGE=registry.access.redhat.com/ubi9/ubi-minimal:latest
+FROM ${BASE_IMAGE}
+
+ARG VERSION=0.1.0
+LABEL org.opencontainers.image.title="ptk" \
+      org.opencontainers.image.description="Pure FlashArray node checks, PVC-to-array audit and fio benchmarks for RKE2" \
+      org.opencontainers.image.version="${VERSION}"
+
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 python3 fio \
+ && microdnf clean all \
+ && rm -rf /var/cache/yum
+
+COPY ptk /opt/ptk/ptk
+ENV PYTHONPATH=/opt/ptk \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+USER 65532:65532
+ENTRYPOINT ["python3", "-m", "ptk"]
+CMD ["--help"]

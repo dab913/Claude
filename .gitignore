@@ -5,3 +5,4 @@ __pycache__/
 *.db
 passengers.json
 .env
+dist/
