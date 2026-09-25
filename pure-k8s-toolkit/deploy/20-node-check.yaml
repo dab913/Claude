@@ -8,11 +8,13 @@ data:
   # the nodes reach the FlashArray: iscsi | nvme-tcp | fc | any.
   # kata: "auto" checks nested-virt readiness and fails only on nodes whose
   # containerd has a Kata handler; "required" expects Kata everywhere; "off".
+  # cni: the only CNI config that should exist in /etc/cni/net.d on every node.
   policy.json: |
     {
       "protocol": "iscsi",
       "min_paths": 2,
-      "kata": "auto"
+      "kata": "auto",
+      "cni": "cilium"
     }
 ---
 apiVersion: apps/v1
@@ -47,7 +49,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: node-check
-          image: harbor.lab.local/platform/ptk:0.1.0   # your internal registry
+          image: valhalla.morpheus.net/platform/ptk:0.1.0   # your internal registry
           args: ["node-check"]
           env:
             - name: NODE_NAME

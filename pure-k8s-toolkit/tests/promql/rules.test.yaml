@@ -78,3 +78,44 @@ tests:
           - exp_labels: {severity: warning}
             exp_annotations:
               summary: "1 node(s) are not reporting ptk node checks"
+
+  - name: w08 still labelled etcd while running rke2-agent
+    interval: 1m
+    input_series:
+      - {series: 'kube_node_role{node="w08.morpheus.net",role="etcd"}', values: "1x20"}
+      - {series: 'kube_node_role{node="w08.morpheus.net",role="control-plane"}', values: "1x20"}
+      - {series: 'kube_node_role{node="c01.morpheus.net",role="etcd"}', values: "1x20"}
+      - {series: 'ptk_node_rke2_mode_info{node="w08.morpheus.net",mode="agent"}', values: "1x20"}
+      - {series: 'ptk_node_rke2_mode_info{node="c01.morpheus.net",mode="server"}', values: "1x20"}
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: PtkNodeRoleMismatch
+        exp_alerts:
+          - exp_labels: {severity: warning, node: w08.morpheus.net, role: etcd, mode: agent}
+            exp_annotations:
+              summary: "w08.morpheus.net is labelled etcd but runs rke2-agent"
+              description: >-
+                Stale server-role labels. If this node is still an etcd member, remove the member
+                first (docs/runbooks/etcd-remove-stale-member.md), then remove the labels.
+          - exp_labels: {severity: warning, node: w08.morpheus.net, role: control-plane, mode: agent}
+            exp_annotations:
+              summary: "w08.morpheus.net is labelled control-plane but runs rke2-agent"
+              description: >-
+                Stale server-role labels. If this node is still an etcd member, remove the member
+                first (docs/runbooks/etcd-remove-stale-member.md), then remove the labels.
+
+  - name: etcd running on the wrong number of nodes
+    interval: 1m
+    input_series:
+      - {series: 'ptk_node_etcd_running{node="c01.morpheus.net"}', values: "1x15"}
+      - {series: 'ptk_node_etcd_running{node="c02.morpheus.net"}', values: "1x15"}
+      - {series: 'ptk_node_etcd_running{node="c03.morpheus.net"}', values: "0x15"}
+      - {series: 'ptk_node_etcd_running{node="w08.morpheus.net"}', values: "0x15"}
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: PtkEtcdMemberCount
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "2 nodes run etcd; this cluster expects exactly 3 (c01, c02, c03)"
+              description: "Run scripts/etcd-members.sh on a control-plane node to see the actual membership."

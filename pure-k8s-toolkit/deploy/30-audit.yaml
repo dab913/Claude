@@ -1,5 +1,6 @@
-# One entry per FlashArray. Tokens come from the Secret below; use a
-# read-only array user. ca_file is the array's management certificate chain
+# One entry per FlashArray. fa01-mgmt.morpheus.net is a placeholder: use your array's
+# management name or IP. Tokens come from the ptk-array-tokens Secret, which you
+# create by hand (see below); use a read-only array user. ca_file is the array's management certificate chain
 # (air-gapped arrays usually have an internal CA or self-signed cert).
 apiVersion: v1
 kind: ConfigMap
@@ -9,7 +10,7 @@ metadata:
 data:
   arrays.json: |
     [
-      {"name": "fa01", "endpoint": "https://fa01-mgmt.example.local",
+      {"name": "fa01", "endpoint": "https://fa01-mgmt.morpheus.net",
        "token_file": "/etc/ptk/secrets/fa01-token", "ca_file": "/etc/ptk/secrets/ca.pem"}
     ]
 # Tokens live in a Secret you create out of band (not in this directory, so
@@ -39,7 +40,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: audit
-          image: harbor.lab.local/platform/ptk:0.1.0
+          image: valhalla.morpheus.net/platform/ptk:0.1.0
           args: ["audit"]
           env:
             - {name: PTK_ARRAYS_FILE, value: /etc/ptk/arrays.json}

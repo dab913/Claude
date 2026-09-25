@@ -10,25 +10,25 @@
 # images, merge these entries into it rather than replacing it.
 mirrors:
   docker.io:
-    endpoint: ["https://harbor.lab.local"]
+    endpoint: ["https://valhalla.morpheus.net"]
     rewrite:
       "^(.*)$": "dockerhub/$1"
   quay.io:
-    endpoint: ["https://harbor.lab.local"]
+    endpoint: ["https://valhalla.morpheus.net"]
     rewrite:
       "^(.*)$": "quay/$1"
   registry.k8s.io:
-    endpoint: ["https://harbor.lab.local"]
+    endpoint: ["https://valhalla.morpheus.net"]
     rewrite:
       "^(.*)$": "k8s/$1"
   ghcr.io:
-    endpoint: ["https://harbor.lab.local"]
+    endpoint: ["https://valhalla.morpheus.net"]
     rewrite:
       "^(.*)$": "ghcr/$1"
-  harbor.lab.local:
-    endpoint: ["https://harbor.lab.local"]
+  valhalla.morpheus.net:
+    endpoint: ["https://valhalla.morpheus.net"]
 configs:
-  harbor.lab.local:
+  valhalla.morpheus.net:
     # A pull-only Harbor robot account (Harbor > Robot Accounts, "pull repository"
     # on the projects above). Nodes then need no imagePullSecrets.
     auth:

@@ -22,6 +22,30 @@ It does not replace:
 - **Block-device scheduler.** The FlashArray schedules I/O itself, so its paths should use the `none` scheduler.
 - **Kata needs nested virtualization.** Each Kata pod is a small VM inside your RHEL VM. That only works if vCenter exposes VT-x/AMD-V to the guest. The check reports it per node, and an alert fires if a node has Kata installed but can't start VMs.
 
+## Notes for this cluster (morpheus.net)
+
+Layout: three controllers `c01`–`c03` (10.5.5.140–142) running `rke2-server` with embedded etcd, and workers `w01`–`w13` running `rke2-agent`. RKE2 has `cni: none`, and Cilium, managed separately, is the only CNI. `lb01` (10.5.5.150, HAProxy) fronts `rke2-api.morpheus.net:9345` and `rancher.morpheus.net`. Images come from Harbor at `valhalla.morpheus.net`.
+
+### etcd membership and node roles
+
+- **Before any control-plane maintenance**, run [`scripts/etcd-members.sh`](scripts/etcd-members.sh) on a controller. It's read-only. It lists every etcd member, flags any whose IP isn't one of the three controllers, and shows how many more failures etcd can survive.
+- **Removing a stale member** (the current w08 exception): follow [`docs/runbooks/etcd-remove-stale-member.md`](docs/runbooks/etcd-remove-stale-member.md). Remove the membership first, verify it, and only then clean up the node's labels.
+- node-check reports what each host actually runs (`rke2 server` or `rke2 agent`, and whether etcd is running). Two alerts build on that:
+  - `PtkEtcdMemberCount` fires when the number of nodes running etcd isn't 3.
+  - `PtkNodeRoleMismatch` fires when a node carries etcd or control-plane labels but runs `rke2-agent`. That describes w08 until the runbook is finished.
+- The host view can't see an etcd member that exists but runs nowhere. That's exactly w08's case, which is why the script exists alongside the alerts.
+
+### Cilium
+
+- node-check (`"cni": "cilium"` in the policy) fails a node whose active CNI config in `/etc/cni/net.d` isn't Cilium's, and warns about leftover configs from another CNI. The usual culprit is Canal from a node that once started without `cni: none`. containerd uses the first file by name, so a leftover can take over after a reboot.
+- **Istio CNI with Cilium:** Istio's CNI plugin chains itself into Cilium's config. Cilium must be installed with `cni.exclusive=false`, or it rewrites its config and drops Istio's plugin. node-check reports whether `istio-cni` is chained (the `plugins` label on `ptk_node_cni_config_info`).
+- **Cilium's kube-proxy replacement with Istio:** set `socketLB.hostNamespaceOnly=true`. Without it, Cilium rewrites Service addresses at the socket, before the sidecar sees the connection. See Cilium's Istio integration docs for your version.
+- **Cilium with Kata:** a Kata guest has its own kernel, so Cilium's socket-level load balancing never sees its connections. Service traffic from Kata pods depends on Cilium translating addresses per packet instead, and the setting above covers that too. The Kata smoke test in `deploy/kata/istio-smoke.yaml` calls a ClusterIP Service from a Kata pod, so it exercises this path. Run it after any Cilium upgrade.
+- **Cilium host firewall:** if host policies are enabled, allow node traffic to the FlashArray data ports (iSCSI 3260, NVMe/TCP 4420) and the audit's HTTPS (443) to the array management address. Blocked storage traffic shows up in node-check as degraded or missing paths.
+- If the cluster uses default-deny policies, [`deploy/60-cilium-policy.yaml`](deploy/60-cilium-policy.yaml) is a starting point:
+  - it lets Rancher Monitoring scrape ptk;
+  - it lets ptk-audit reach the API server, DNS and the array (replace the FlashArray address placeholder).
+
 ## Getting images into Harbor
 
 The runtime uses only the Python standard library, so you don't need a PyPI mirror. The build needs only the UBI 9 minimal base image and the `python3` and `fio` RPMs.
@@ -35,8 +59,8 @@ scripts/airgap-bundle.sh save             # images.txt -> dist/mirror/ (all arch
 
 # Air-gapped side, with a Harbor robot account that can push
 export HARBOR_USER='robot$ci-push' HARBOR_PASSWORD=...
-scripts/airgap-bundle.sh push        harbor.lab.local          # -> harbor.lab.local/platform/ptk:0.1.0
-scripts/airgap-bundle.sh push-mirror harbor.lab.local          # quay.io/x/y -> harbor.lab.local/quay/x/y
+scripts/airgap-bundle.sh push        valhalla.morpheus.net          # -> valhalla.morpheus.net/platform/ptk:0.1.0
+scripts/airgap-bundle.sh push-mirror valhalla.morpheus.net          # quay.io/x/y -> valhalla.morpheus.net/quay/x/y
 ```
 
 `push-mirror` puts each source registry in its own Harbor project: `dockerhub`, `quay`, `k8s` and `ghcr`. Create those projects (plus `platform`) first. [`deploy/rke2/registries.yaml`](deploy/rke2/registries.yaml) then rewrites pulls to them on every node. Upstream Helm charts and manifests, kata-deploy's included, pull through Harbor without any image overrides. Nodes authenticate with a pull-only robot account there, so pods need no `imagePullSecrets`.
@@ -56,7 +80,7 @@ podman run --rm --pid=host --user 0 --security-opt label=disable \
   -v /etc:/host/etc:ro -v /sys:/host/sys:ro -v /opt:/host/opt:ro \
   -v /var/lib/rancher/rke2/agent/etc/containerd:/host/var/lib/rancher/rke2/agent/etc/containerd:ro \
   -e PTK_PROTOCOL=iscsi \
-  harbor.lab.local/platform/ptk:0.1.0 node-check --once
+  valhalla.morpheus.net/platform/ptk:0.1.0 node-check --once
 ```
 
 Notes on the flags:

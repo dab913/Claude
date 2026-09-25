@@ -10,8 +10,8 @@ metadata:
   name: flasharray-mgmt
   namespace: ptk-system
 spec:
-  hosts: ["fa01-mgmt.example.local"]
-  addresses: ["10.0.50.10/32"]       # FlashArray management VIP
+  hosts: ["fa01-mgmt.morpheus.net"]
+  addresses: ["10.5.5.X/32"]         # PLACEHOLDER: FlashArray management VIP
   ports:
     - {number: 443, name: https, protocol: TLS}
   location: MESH_EXTERNAL

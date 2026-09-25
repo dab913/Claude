@@ -61,7 +61,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: server
-          image: harbor.lab.local/platform/ptk:0.1.0
+          image: valhalla.morpheus.net/platform/ptk:0.1.0
           command: ["python3", "-m", "http.server", "8080", "--directory", "/opt/ptk"]
           ports:
             - {containerPort: 8080}
@@ -89,7 +89,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: client
-          image: harbor.lab.local/platform/ptk:0.1.0
+          image: valhalla.morpheus.net/platform/ptk:0.1.0
           command:
             - python3
             - -c
@@ -136,7 +136,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: client
-          image: harbor.lab.local/platform/ptk:0.1.0
+          image: valhalla.morpheus.net/platform/ptk:0.1.0
           command:
             - python3
             - -c
@@ -183,7 +183,7 @@ spec:
       securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: client
-          image: harbor.lab.local/platform/ptk:0.1.0
+          image: valhalla.morpheus.net/platform/ptk:0.1.0
           command:
             - python3
             - -c

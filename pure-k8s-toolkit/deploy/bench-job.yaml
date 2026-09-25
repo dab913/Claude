@@ -37,7 +37,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: bench
-          image: harbor.lab.local/platform/ptk:0.1.0
+          image: valhalla.morpheus.net/platform/ptk:0.1.0
           args: ["bench"]
           env:
             - {name: PTK_BENCH_DIR, value: /data}

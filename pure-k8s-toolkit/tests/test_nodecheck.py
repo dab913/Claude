@@ -104,5 +104,63 @@ class NodeCheckTest(unittest.TestCase):
         self.assertNotIn("ptk_node_kata", c.metrics("n1").render())
 
 
+    # -- RKE2 role (the w08 situation) ------------------------------------
+
+    def test_agent_node_reports_mode_without_etcd(self):
+        c, results = check(rke2="agent")
+        self.assertEqual(results["rke2.role"].status, "info")
+        text = c.metrics("w08").render()
+        self.assertIn('ptk_node_rke2_mode_info{mode="agent",node="w08"} 1', text)
+        self.assertIn('ptk_node_etcd_running{node="w08"} 0', text)
+
+    def test_etcd_on_agent_fails(self):
+        c, results = check(rke2="agent", processes=("multipathd", "iscsid", "etcd"))
+        self.assertEqual(results["rke2.role"].status, "fail")
+
+    def test_server_with_etcd(self):
+        c, results = check(rke2="server")
+        self.assertEqual(results["rke2.role"].status, "info")
+        self.assertIn('ptk_node_etcd_running{node="c01"} 1', c.metrics("c01").render())
+
+    def test_server_without_etcd_warns(self):
+        c, results = check(processes=("multipathd", "iscsid", ("rke2", "rke2\0server\0")))
+        self.assertEqual(results["rke2.role"].status, "warn")
+
+    # -- CNI ----------------------------------------------------------------
+
+    def test_cilium_only(self):
+        c, results = check(policy={"cni": "cilium"},
+                           cni={"05-cilium.conflist": fakehost.CILIUM,
+                                "10-canal.conflist.cilium_bak": fakehost.CANAL})  # renamed by Cilium: ignored
+        self.assertEqual(results["cni.config"].status, "ok")
+
+    def test_canal_leftover_warns(self):
+        c, results = check(policy={"cni": "cilium"},
+                           cni={"05-cilium.conflist": fakehost.CILIUM, "10-canal.conflist": fakehost.CANAL})
+        self.assertEqual(results["cni.config"].status, "warn")
+        self.assertIn("10-canal.conflist", results["cni.config"].message)
+        text = c.metrics("w1").render()
+        self.assertIn('ptk_node_cni_config_info{active="true",file="05-cilium.conflist"', text)
+        self.assertIn('ptk_node_cni_config_info{active="false",file="10-canal.conflist"', text)
+
+    def test_other_cni_active_fails(self):
+        c, results = check(policy={"cni": "cilium"},
+                           cni={"00-canal.conflist": fakehost.CANAL, "05-cilium.conflist": fakehost.CILIUM})
+        self.assertEqual(results["cni.config"].status, "fail")
+
+    def test_no_cni_config_fails(self):
+        c, results = check(policy={"cni": "cilium"})
+        self.assertEqual(results["cni.config"].status, "fail")
+
+    def test_istio_cni_chained_into_cilium(self):
+        c, results = check(policy={"cni": "cilium"}, cni={"05-cilium.conflist": fakehost.CILIUM_ISTIO})
+        self.assertEqual(results["cni.config"].status, "ok")
+        self.assertEqual(c.info.get("istio_cni_chained"), "true")
+
+    def test_cni_check_off_by_default(self):
+        c, results = check()
+        self.assertNotIn("cni.config", results)
+
+
 if __name__ == "__main__":
     unittest.main()

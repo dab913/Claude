@@ -48,6 +48,10 @@ DEFAULT_POLICY: Dict[str, Any] = {
     "require_blacklist": [{"vendor": "VMware", "product": "Virtual disk"}],
     # Block-layer scheduler for Pure paths. FlashArray does its own scheduling.
     "scheduler": "none",
+    # Expected sole CNI ("cilium", "canal", "calico", ...). Empty skips the check.
+    "cni": "",
+    # rke2-server nodes are expected to run embedded etcd.
+    "etcd_on_servers": True,
     # Kata Containers readiness: "auto" fails only on nodes whose containerd has a
     # Kata handler; "required" expects Kata on every node; "off" skips the checks.
     "kata": "auto",

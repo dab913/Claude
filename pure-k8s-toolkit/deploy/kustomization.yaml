@@ -8,6 +8,6 @@ resources:
   - 40-monitoring.yaml
 # Point every ptk image at your internal registry in one place.
 images:
-  - name: harbor.lab.local/platform/ptk
-    newName: harbor.lab.local/platform/ptk
+  - name: valhalla.morpheus.net/platform/ptk
+    newName: valhalla.morpheus.net/platform/ptk
     newTag: 0.1.0

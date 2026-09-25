@@ -71,6 +71,29 @@ spec:
           labels: {severity: critical}
           annotations:
             summary: "{{ $labels.node }}: {{ if $labels.pvc }}{{ $labels.namespace }}/{{ $labels.pvc }} {{ end }}volume {{ $labels.wwid }} has {{ $value }} running path(s)"
+    - name: ptk.cluster
+      rules:
+        - alert: PtkEtcdMemberCount
+          # Host view: how many nodes run an etcd process. It cannot see members that
+          # exist in etcd but run nowhere (the w08 case); scripts/etcd-members.sh can.
+          expr: count(ptk_node_etcd_running == 1) != 3
+          for: 10m
+          labels: {severity: critical}
+          annotations:
+            summary: "{{ $value }} nodes run etcd; this cluster expects exactly 3 (c01, c02, c03)"
+            description: "Run scripts/etcd-members.sh on a control-plane node to see the actual membership."
+        - alert: PtkNodeRoleMismatch
+          # kube-state-metrics role labels vs. what the host actually runs.
+          expr: >-
+            kube_node_role{role=~"etcd|control-plane|master"}
+            * on (node) group_left (mode) ptk_node_rke2_mode_info{mode="agent"}
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: "{{ $labels.node }} is labelled {{ $labels.role }} but runs rke2-agent"
+            description: >-
+              Stale server-role labels. If this node is still an etcd member, remove the member
+              first (docs/runbooks/etcd-remove-stale-member.md), then remove the labels.
     - name: ptk.kata
       rules:
         - alert: PtkKataNodeNotCapable

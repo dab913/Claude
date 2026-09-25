@@ -11,7 +11,7 @@
 #   -n  node to pin every run to (strongly recommended)         default: scheduler picks
 #   -t  seconds per fio profile                                 default 60
 #   -p  fio profiles (comma-separated, see ptk/bench.py)        default all
-#   -i  ptk image                                               default harbor.lab.local/platform/ptk:0.1.0
+#   -i  ptk image                                               default valhalla.morpheus.net/platform/ptk:0.1.0
 #   -D  buffered I/O for Filesystem runs (if virtio-fs under Kata rejects O_DIRECT)
 #
 # Needs kubectl and python3 on the machine you run it from. Results are kept
@@ -21,7 +21,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 NS=ptk-system
 CLASSES="" RUNTIMES="runc,kata-qemu" MODES="Filesystem,Block" NODE="" SECS=60 PROFILES=""
-IMAGE="harbor.lab.local/platform/ptk:0.1.0" DIRECT=1
+IMAGE="valhalla.morpheus.net/platform/ptk:0.1.0" DIRECT=1
 while getopts "s:r:m:n:t:p:i:D" opt; do
   case "$opt" in
     s) CLASSES="$OPTARG" ;; r) RUNTIMES="$OPTARG" ;; m) MODES="$OPTARG" ;; n) NODE="$OPTARG" ;;

@@ -7,6 +7,7 @@ so host processes are visible) or once from podman on a single node.
 from __future__ import annotations
 
 import glob
+import json
 import os
 import re
 import socket
@@ -42,6 +43,9 @@ class NodeChecker:
         self.paths: List[Dict[str, object]] = []
         self.kata_handlers: List[str] = []
         self.kata_capable = False
+        self.rke2_mode = ""
+        self.etcd_running = False
+        self.cni_configs: List[Dict[str, object]] = []
 
     # -- helpers -----------------------------------------------------------
 
@@ -59,8 +63,14 @@ class NodeChecker:
         names = set()
         for comm in glob.glob(os.path.join(self.proc, "[0-9]*", "comm")):
             name = self._read(comm)
-            if name:
-                names.add(name.strip())
+            if not name:
+                continue
+            name = name.strip()
+            names.add(name)
+            if name == "rke2" and not self.rke2_mode:
+                args = (self._read(os.path.join(os.path.dirname(comm), "cmdline")) or "").split("\0")
+                if len(args) > 1 and args[1] in ("server", "agent"):
+                    self.rke2_mode = args[1]
         return names
 
     def _modules(self) -> set:
@@ -75,12 +85,16 @@ class NodeChecker:
     def run(self) -> List[Result]:
         self.results, self.info, self.paths = [], {}, []
         self.kata_handlers, self.kata_capable = [], False
+        self.rke2_mode, self.etcd_running, self.cni_configs = "", False, []
         protocol = self.policy.get("protocol", "any")
         procs = self._processes()
         mods = self._modules()
 
         self._check_kernel(mods, protocol)
         self._check_daemons(procs, protocol)
+        self._check_rke2_role(procs)
+        if self.policy.get("cni"):
+            self._check_cni(self.policy["cni"])
         self._check_identity(protocol)
         conf = self._check_multipath_conf(protocol)
         self._check_devices(conf)
@@ -116,6 +130,52 @@ class NodeChecker:
         if protocol == "iscsi":
             self._add("daemon.iscsid", OK if "iscsid" in procs else FAIL,
                       "iscsid " + ("running" if "iscsid" in procs else "not running; systemctl enable --now iscsid"))
+
+    def _check_rke2_role(self, procs: set) -> None:
+        """What this host actually runs, to compare against its Kubernetes role labels
+        (alert PtkNodeRoleMismatch) and the expected etcd member count (PtkEtcdMemberCount).
+        The host cannot see etcd membership itself; scripts/etcd-members.sh does that."""
+        if not procs:
+            return
+        self.etcd_running = "etcd" in procs
+        mode = self.rke2_mode or "unknown"
+        self.info["rke2_mode"] = mode
+        if mode == "agent" and self.etcd_running:
+            self._add("rke2.role", FAIL, "etcd is running on a node whose RKE2 service is rke2-agent")
+        elif mode == "server" and not self.etcd_running and self.policy.get("etcd_on_servers", True):
+            self._add("rke2.role", WARN, "rke2-server without a running etcd on this node")
+        else:
+            self._add("rke2.role", INFO, f"rke2 {mode}" + (", etcd running" if self.etcd_running else ""))
+
+    def _check_cni(self, expected: str) -> None:
+        """containerd uses the first CNI config file in /etc/cni/net.d (sorted by name).
+        Leftovers from another CNI (for example RKE2's default Canal) can silently win."""
+        net_d = os.path.join(self.etc, "cni", "net.d")
+        files = sorted(f for f in os.listdir(net_d) if f.endswith((".conf", ".conflist", ".json"))) \
+            if os.path.isdir(net_d) else []
+        for f in files:
+            try:
+                conf = json.loads(self._read(os.path.join(net_d, f)) or "{}")
+            except ValueError:
+                conf = {}
+            plugins = [p.get("type", "") for p in conf.get("plugins", [conf]) if isinstance(p, dict)]
+            self.cni_configs.append({"file": f, "name": conf.get("name", ""), "plugins": plugins})
+        if not files:
+            self._add("cni.config", FAIL, f"no CNI config in /etc/cni/net.d; {expected} has not initialised this node")
+            return
+        first = self.cni_configs[0]
+        wanted = f"{expected}-cni" if expected == "cilium" else expected
+        first_ok = wanted in first["plugins"] or expected in str(first["name"])
+        others = [c["file"] for c in self.cni_configs[1:]]
+        if not first_ok:
+            self._add("cni.config", FAIL, f"active CNI config is {first['file']} ({', '.join(first['plugins'])}), not {expected}")
+        elif others:
+            self._add("cni.config", WARN, f"{first['file']} is active, but other CNI configs remain: {', '.join(others)}; "
+                                          "remove them so they cannot take over")
+        else:
+            self._add("cni.config", OK, f"{expected} is the only CNI ({first['file']})")
+        if "istio-cni" in first["plugins"]:
+            self.info["istio_cni_chained"] = "true"
 
     def _check_identity(self, protocol: str) -> None:
         # vCenter template clones often share these; duplicates are caught cluster-wide
@@ -331,6 +391,16 @@ class NodeChecker:
         if "machine_id" in self.info:
             snap.add("ptk_node_machine_id_info", 1, {"node": node, "machine_id": self.info["machine_id"]},
                      help="/etc/machine-id; must be unique per node")
+        if self.rke2_mode:
+            snap.add("ptk_node_rke2_mode_info", 1, {"node": node, "mode": self.rke2_mode},
+                     help="RKE2 service running on this host (server or agent)")
+            snap.add("ptk_node_etcd_running", 1 if self.etcd_running else 0, {"node": node},
+                     help="1 if an etcd process runs on this host")
+        for i, c in enumerate(self.cni_configs):
+            snap.add("ptk_node_cni_config_info", 1,
+                     {"node": node, "file": str(c["file"]), "plugins": ",".join(c["plugins"]),
+                      "active": "true" if i == 0 else "false"},
+                     help="CNI config files in /etc/cni/net.d; containerd uses the first one")
         if self.policy.get("kata", "auto") != "off":
             snap.add("ptk_node_kata_capable", 1 if self.kata_capable else 0, {"node": node},
                      help="1 when the node can start Kata VMs (vmx/svm and /dev/kvm)")
