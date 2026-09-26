@@ -1,0 +1,92 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ptk-policy
+  namespace: ptk-system
+data:
+  # Overrides merged over ptk/policy.py defaults. Set protocol to match how
+  # the nodes reach the FlashArray: iscsi | nvme-tcp | fc | any.
+  # kata: "auto" checks nested-virt readiness and fails only on nodes whose
+  # containerd has a Kata handler; "required" expects Kata everywhere; "off".
+  # cni: the only CNI config that should exist in /etc/cni/net.d on every node.
+  # service_probes: reached from each node's pod network every cycle. A node whose
+  # pods cannot reach them reports NotReady (see readinessProbe), which is how
+  # `ptk health` sees per-node Service routing without scraping across the dataplane.
+  policy.json: |
+    {
+      "protocol": "iscsi",
+      "min_paths": 2,
+      "kata": "auto",
+      "cni": "cilium",
+      "service_probes": ["https://10.43.0.1:443/version", "kubernetes.default.svc.cluster.local"]
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ptk-node-check
+  namespace: ptk-system
+  labels: {app.kubernetes.io/name: ptk-node-check}
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: ptk-node-check}
+  updateStrategy:
+    # Pods go NotReady on nodes with broken Service routing; a smaller budget would
+    # block rolling out node-check itself during exactly that kind of incident.
+    rollingUpdate: {maxUnavailable: 100%}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: ptk-node-check}
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: ptk-node-check
+      hostPID: true                     # to see multipathd / iscsid
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists              # all 16 nodes, including control plane
+      # Always runc: hostPID is not possible inside a Kata VM, and this pod must
+      # observe the host. Do not set a runtimeClassName here.
+      securityContext:
+        # uid 0 so it can read root-only files such as RKE2's containerd
+        # config.toml. All capabilities are dropped and every mount is read-only.
+        runAsUser: 0
+        runAsGroup: 0
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: node-check
+          image: valhalla.morpheus.net/platform/ptk:0.1.0   # your internal registry
+          args: ["node-check"]
+          env:
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - {name: PTK_POLICY_FILE, value: /etc/ptk/policy.json}
+            - {name: PTK_INTERVAL, value: "300"}
+          ports:
+            - {name: metrics, containerPort: 9110}
+          readinessProbe:
+            httpGet: {path: /readyz, port: metrics}
+          resources:
+            requests: {cpu: 5m, memory: 32Mi}
+            limits: {memory: 96Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: host-etc, mountPath: /host/etc, readOnly: true}
+            - {name: host-sys, mountPath: /host/sys, readOnly: true}
+            - {name: host-containerd, mountPath: /host/var/lib/rancher/rke2/agent/etc/containerd, readOnly: true}
+            - {name: host-opt, mountPath: /host/opt, readOnly: true}
+            - {name: policy, mountPath: /etc/ptk}
+      volumes:
+        - name: host-etc
+          hostPath: {path: /etc, type: Directory}
+        - name: host-sys
+          hostPath: {path: /sys, type: Directory}
+        - name: host-containerd
+          hostPath: {path: /var/lib/rancher/rke2/agent/etc/containerd, type: Directory}
+        - name: host-opt              # kata-deploy installs to /opt/kata
+          hostPath: {path: /opt, type: Directory}
+        - name: policy
+          configMap: {name: ptk-policy}

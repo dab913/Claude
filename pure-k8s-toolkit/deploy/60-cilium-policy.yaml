@@ -1,0 +1,47 @@
+# Optional: apply if the cluster uses default-deny Cilium network policies.
+# Not in kustomization.yaml by default. Adjust the FlashArray CIDR.
+#
+# node-check needs no egress (it only reads host files). ptk-audit needs the
+# Kubernetes API, DNS and the FlashArray management API. Both accept scrapes
+# from Rancher Monitoring only.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ptk-metrics-ingress
+  namespace: ptk-system
+spec:
+  endpointSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [ptk-node-check, ptk-audit]}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: cattle-monitoring-system
+      toPorts:
+        - ports:
+            - {port: "9110", protocol: TCP}
+            - {port: "9111", protocol: TCP}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ptk-audit-egress
+  namespace: ptk-system
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: ptk-audit
+  egress:
+    - toEntities: [kube-apiserver]
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}
+    - toCIDR: ["10.5.5.X/32"]   # PLACEHOLDER: FlashArray management VIP
+      toPorts:
+        - ports:
+            - {port: "443", protocol: TCP}

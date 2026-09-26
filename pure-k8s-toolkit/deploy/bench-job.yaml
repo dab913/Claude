@@ -1,0 +1,60 @@
+# Benchmarks one StorageClass once. To compare classes, runc vs Kata, and
+# Filesystem vs Block in one go, use scripts/bench-matrix.sh instead.
+#   kubectl apply -f bench-job.yaml && kubectl -n ptk-system logs -f job/ptk-bench
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ptk-bench
+  namespace: ptk-system
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: px-fada-block     # the class under test
+  resources:
+    requests: {storage: 50Gi}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ptk-bench
+  namespace: ptk-system
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      annotations:
+        # An Istio sidecar would keep the Job pod running after fio finishes.
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      # runtimeClassName: kata-qemu       # benchmark inside a Kata VM
+      # Pin to a node to compare nodes/NIC paths; drop to let the scheduler pick.
+      # nodeSelector: {kubernetes.io/hostname: worker-07}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: bench
+          image: valhalla.morpheus.net/platform/ptk:0.1.0
+          args: ["bench"]
+          env:
+            - {name: PTK_BENCH_DIR, value: /data}
+            - {name: PTK_BENCH_SIZE, value: 8g}       # well above page cache effects; direct=1 anyway
+            - {name: PTK_BENCH_RUNTIME, value: "60"}
+            - {name: PTK_STORAGECLASS, value: px-fada-block}
+            - {name: PTK_RUNTIME_CLASS, value: runc}  # label only; match runtimeClassName
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+          resources:
+            requests: {cpu: "2", memory: 1Gi}
+            limits: {memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: ptk-bench}

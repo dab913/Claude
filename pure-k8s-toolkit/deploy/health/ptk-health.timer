@@ -1,0 +1,10 @@
+[Unit]
+Description=Run ptk cluster health checks every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

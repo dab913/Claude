@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 00-namespace.yaml
+  - 10-rbac.yaml
+  - 20-node-check.yaml
+  - 30-audit.yaml
+  - 40-monitoring.yaml
+# Point every ptk image at your internal registry in one place.
+images:
+  - name: valhalla.morpheus.net/platform/ptk
+    newName: valhalla.morpheus.net/platform/ptk
+    newTag: 0.1.0

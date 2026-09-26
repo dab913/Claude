@@ -1,0 +1,72 @@
+# One entry per FlashArray. fa01-mgmt.morpheus.net is a placeholder: use your array's
+# management name or IP. Tokens come from the ptk-array-tokens Secret, which you
+# create by hand (see below); use a read-only array user. ca_file is the array's management certificate chain
+# (air-gapped arrays usually have an internal CA or self-signed cert).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ptk-arrays
+  namespace: ptk-system
+data:
+  arrays.json: |
+    [
+      {"name": "fa01", "endpoint": "https://fa01-mgmt.morpheus.net",
+       "token_file": "/etc/ptk/secrets/fa01-token", "ca_file": "/etc/ptk/secrets/ca.pem"}
+    ]
+# Tokens live in a Secret you create out of band (not in this directory, so
+# `kubectl apply -k` never overwrites real tokens):
+#   kubectl -n ptk-system create secret generic ptk-array-tokens \
+#     --from-literal=fa01-token=<api-token> --from-file=ca.pem=./array-ca.pem
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ptk-audit
+  namespace: ptk-system
+  labels: {app.kubernetes.io/name: ptk-audit}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: ptk-audit}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: ptk-audit}
+    spec:
+      serviceAccountName: ptk-audit
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532                  # lets the non-root user read the 0440 Secret files
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: audit
+          image: valhalla.morpheus.net/platform/ptk:0.1.0
+          args: ["audit"]
+          env:
+            - {name: PTK_ARRAYS_FILE, value: /etc/ptk/arrays.json}
+            # PVs from these CSI drivers are expected to exist on an array.
+            # Portworx FADA: pxd.portworx.com; legacy PSO: pure-csi.
+            - {name: PTK_CSI_DRIVERS, value: "pxd.portworx.com,pure-csi"}
+            # With Portworx, list only FlashArray Direct Access classes here,
+            # because PX-native volumes do not map 1:1 to array volumes.
+            - {name: PTK_STORAGECLASSES, value: ""}
+            - {name: PTK_INTERVAL, value: "600"}
+          ports:
+            - {name: metrics, containerPort: 9111}
+          readinessProbe:
+            httpGet: {path: /readyz, port: metrics}
+          resources:
+            requests: {cpu: 10m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: arrays, mountPath: /etc/ptk/arrays.json, subPath: arrays.json}
+            - {name: tokens, mountPath: /etc/ptk/secrets, readOnly: true}
+      volumes:
+        - name: arrays
+          configMap: {name: ptk-arrays}
+        - name: tokens
+          secret: {secretName: ptk-array-tokens, defaultMode: 0440}
